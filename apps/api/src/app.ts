@@ -21,6 +21,15 @@ import { reportsRouter } from "./modules/reports/reports.routes.js";
 export function createApp() {
   const app = express();
 
+  // The API always runs behind exactly one reverse-proxy hop in every deployed
+  // environment (Render's edge proxy). Without this, Express's req.ip ignores
+  // X-Forwarded-For and falls back to the socket's remoteAddress, which is the
+  // proxy's own address — identical for every external request — so
+  // express-rate-limit's default IP-based keyGenerator buckets all users
+  // together instead of limiting per client. Must be set before any
+  // IP-based middleware (apiRateLimiter below) or route registration.
+  app.set("trust proxy", 1);
+
   app.use(helmet());
   app.use(
     cors({
