@@ -1,0 +1,14 @@
+/** Stable machine-readable error codes shared between API and web (PRD §23). */
+export const ErrorCodes = {
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+  UNAUTHORIZED: "UNAUTHORIZED",
+  FORBIDDEN: "FORBIDDEN",
+  NOT_FOUND: "NOT_FOUND",
+  CONFLICT: "CONFLICT",
+  RATE_LIMITED: "RATE_LIMITED",
+  SUBSCRIPTION_REQUIRED: "SUBSCRIPTION_REQUIRED",
+  PAYMENT_ERROR: "PAYMENT_ERROR",
+  INTERNAL_ERROR: "INTERNAL_ERROR",
+} as const;
+
+export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
