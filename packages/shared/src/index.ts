@@ -6,3 +6,5 @@ export * from "./errorCodes.js";
 export * from "./golfScore.js";
 export * from "./charity.js";
 export * from "./draw.js";
+export * from "./winner.js";
+export * from "./reports.js";

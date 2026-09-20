@@ -162,7 +162,9 @@ describe("publishDraw", () => {
     expect(recordAuditMock).not.toHaveBeenCalled();
   });
 
-  it("publishes a simulated draw and creates a pending payout for every winning match", async () => {
+  it("publishes a simulated draw and creates a pending payout and a pending verification for every winning match", async () => {
+    const verificationInsert = chainable({ error: null });
+
     fromMock
       .mockReturnValueOnce(chainable({ data: { id: "draw-1", status: "simulated" }, error: null })) // load draw
       .mockReturnValueOnce(chainable({ data: { id: "draw-1", status: "published" }, error: null })) // update -> published
@@ -175,7 +177,8 @@ describe("publishDraw", () => {
           error: null,
         }),
       ) // winning matches
-      .mockReturnValueOnce(chainable({ error: null })); // insert draw_payouts
+      .mockReturnValueOnce(chainable({ error: null })) // insert draw_payouts
+      .mockReturnValueOnce(verificationInsert); // insert winner_verifications
 
     const draw = await publishDraw("admin-1", "draw-1", "req-1");
 
@@ -183,6 +186,23 @@ describe("publishDraw", () => {
     expect(recordAuditMock).toHaveBeenCalledWith(
       expect.objectContaining({ action: "draw.published", newState: expect.objectContaining({ winnerPayoutsCreated: 2 }) }),
     );
+    const verificationRows = (verificationInsert.insert as ReturnType<typeof vi.fn>).mock.calls[0][0] as Array<{ draw_match_id: string; status: string }>;
+    expect(verificationRows).toEqual([
+      { draw_match_id: "match-1", user_id: "user-1", status: "pending" },
+      { draw_match_id: "match-2", user_id: "user-2", status: "pending" },
+    ]);
+  });
+
+  it("Phase H: reports a conflict (not a 500) when a concurrent request already published this draw first", async () => {
+    // Both requests read status="simulated" and pass the initial checks, but only one's
+    // conditional UPDATE (WHERE status = 'simulated') actually matches a row — the
+    // second one is simulated here by the update returning no row.
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: "draw-1", status: "simulated" }, error: null })) // load draw
+      .mockReturnValueOnce(chainable({ data: null, error: null })); // conditional update matched nothing
+
+    await expect(publishDraw("admin-1", "draw-1", "req-1")).rejects.toMatchObject({ status: 409 });
+    expect(recordAuditMock).not.toHaveBeenCalled();
   });
 
   it("publishes cleanly with zero winners (no payout rows to insert)", async () => {
@@ -199,11 +219,12 @@ describe("publishDraw", () => {
 });
 
 describe("updatePayoutStatus", () => {
-  it("marks a payout paid, stamps processed_at, and records the method and audit entry", async () => {
-    const payoutUpdate = chainable({ error: null });
+  it("marks a payout paid when the winner is verification-approved, stamps processed_at, and records the method and audit entry", async () => {
+    const payoutUpdate = chainable({ data: { id: "payout-1" }, error: null }); // conditional update matched a row
 
     fromMock
-      .mockReturnValueOnce(chainable({ data: { id: "payout-1", status: "pending", method: null }, error: null })) // load existing
+      .mockReturnValueOnce(chainable({ data: { id: "payout-1", status: "pending", method: null, draw_match_id: "match-1" }, error: null })) // load existing
+      .mockReturnValueOnce(chainable({ data: { status: "approved" }, error: null })) // winner verification check
       .mockReturnValueOnce(payoutUpdate); // update
 
     await updatePayoutStatus("admin-1", "payout-1", "paid", "req-1", "bank_transfer");
@@ -215,10 +236,52 @@ describe("updatePayoutStatus", () => {
     expect(recordAuditMock).toHaveBeenCalledWith(expect.objectContaining({ action: "draw.payout_recorded", newState: expect.objectContaining({ status: "paid" }) }));
   });
 
+  it("refuses to mark a payout paid when the winner has not been verification-approved", async () => {
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: "payout-1", status: "pending", method: null, draw_match_id: "match-1" }, error: null }))
+      .mockReturnValueOnce(chainable({ data: { status: "submitted" }, error: null })); // awaiting review, not approved
+
+    await expect(updatePayoutStatus("admin-1", "payout-1", "paid", "req-1")).rejects.toMatchObject({ status: 400 });
+    expect(recordAuditMock).not.toHaveBeenCalled();
+  });
+
+  it("does not check verification when marking a payout failed (only 'paid' requires approval)", async () => {
+    const payoutUpdate = chainable({ data: { id: "payout-1" }, error: null }); // conditional update matched a row
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: "payout-1", status: "pending", method: null, draw_match_id: "match-1" }, error: null }))
+      .mockReturnValueOnce(payoutUpdate);
+
+    await updatePayoutStatus("admin-1", "payout-1", "failed", "req-1");
+
+    expect(fromMock).toHaveBeenCalledTimes(2); // no winner_verifications lookup
+    expect(recordAuditMock).toHaveBeenCalledWith(expect.objectContaining({ action: "draw.payout_failed" }));
+  });
+
+  it("refuses to change a payout that has already been paid (idempotent / duplicate-payout prevention)", async () => {
+    fromMock.mockReturnValueOnce(chainable({ data: { id: "payout-1", status: "paid", method: "bank_transfer", draw_match_id: "match-1" }, error: null }));
+
+    await expect(updatePayoutStatus("admin-1", "payout-1", "paid", "req-1")).rejects.toMatchObject({ status: 409 });
+    expect(fromMock).toHaveBeenCalledTimes(1);
+    expect(recordAuditMock).not.toHaveBeenCalled();
+  });
+
   it("throws not found for a nonexistent payout", async () => {
     fromMock.mockReturnValueOnce(chainable({ data: null, error: null }));
 
     await expect(updatePayoutStatus("admin-1", "missing", "paid", "req-1")).rejects.toMatchObject({ status: 404 });
+    expect(recordAuditMock).not.toHaveBeenCalled();
+  });
+
+  it("Phase H: reports a conflict (not a silent success) when a concurrent request already marked the payout paid first", async () => {
+    // Both requests read status="pending" and pass the initial checks, but only one's
+    // conditional UPDATE (WHERE status != 'paid') actually matches a row — the second
+    // one is simulated here by the update returning no row.
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: "payout-1", status: "pending", method: null, draw_match_id: "match-1" }, error: null })) // load existing
+      .mockReturnValueOnce(chainable({ data: { status: "approved" }, error: null })) // winner verification check
+      .mockReturnValueOnce(chainable({ data: null, error: null })); // conditional update matched nothing
+
+    await expect(updatePayoutStatus("admin-1", "payout-1", "paid", "req-1")).rejects.toMatchObject({ status: 409 });
     expect(recordAuditMock).not.toHaveBeenCalled();
   });
 });

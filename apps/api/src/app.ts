@@ -15,6 +15,8 @@ import { scoresRouter } from "./modules/scores/scores.routes.js";
 import { charitiesRouter } from "./modules/charities/charities.routes.js";
 import { donationsRouter } from "./modules/donations/donations.routes.js";
 import { drawsRouter } from "./modules/draws/draws.routes.js";
+import { winnersRouter } from "./modules/winners/winners.routes.js";
+import { reportsRouter } from "./modules/reports/reports.routes.js";
 
 export function createApp() {
   const app = express();
@@ -47,6 +49,8 @@ export function createApp() {
   app.use("/api/charities", charitiesRouter);
   app.use("/api/donations", donationsRouter);
   app.use("/api/draws", drawsRouter);
+  app.use("/api/winners", winnersRouter);
+  app.use("/api/reports", reportsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

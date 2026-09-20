@@ -13,6 +13,7 @@ import {
   type MatchTier,
   type SimulateDrawInput,
   type SubscriptionStatus,
+  type WinnerVerificationStatus,
 } from "@digital-heroes/shared";
 import { supabaseAdmin } from "../../lib/supabase.js";
 import { AppError } from "../../lib/errors.js";
@@ -244,13 +245,20 @@ export async function publishDraw(adminId: string, drawId: string, requestId: st
   if (row.status === "published") throw AppError.conflict("This draw has already been published.");
   if (row.status !== "simulated") throw AppError.validation("A draw must be simulated before it can be published.");
 
+  // Conditioned on status still being "simulated" (Phase H hardening) — guards
+  // against two concurrent publish requests for the same draw. The published-draw
+  // immutability trigger and the unique(draw_match_id) constraints below already
+  // prevent any actual data corruption from this race; this turns the loser's
+  // outcome into a clean, expected 409 rather than a generic 500.
   const { data: updated, error: updateError } = await supabaseAdmin
     .from("draws")
     .update({ status: "published", published_at: new Date().toISOString(), published_by: adminId })
     .eq("id", drawId)
+    .eq("status", "simulated")
     .select("*")
-    .single();
+    .maybeSingle();
   if (updateError) throw AppError.internal("Failed to publish the draw.");
+  if (!updated) throw AppError.conflict("This draw has already been published.");
 
   const { data: winningMatches, error: matchesError } = await supabaseAdmin
     .from("draw_matches")
@@ -265,6 +273,14 @@ export async function publishDraw(adminId: string, drawId: string, requestId: st
       .from("draw_payouts")
       .insert(rows.map((m) => ({ draw_match_id: m.id, user_id: m.user_id, amount_cents: m.prize_amount_cents, status: "pending" })));
     if (payoutError) throw AppError.internal("Failed to record payouts.");
+
+    // Phase F: every winning match also gets a verification record, created in
+    // the same 'pending' (proof required) state a payout starts in — the one
+    // moment a winner comes into existence, exactly like draw_payouts above.
+    const { error: verificationError } = await supabaseAdmin
+      .from("winner_verifications")
+      .insert(rows.map((m) => ({ draw_match_id: m.id, user_id: m.user_id, status: "pending" })));
+    if (verificationError) throw AppError.internal("Failed to create winner verification records.");
   }
 
   await recordAudit({
@@ -292,18 +308,47 @@ export async function updatePayoutStatus(
   if (beforeError) throw AppError.internal("Failed to load the payout.");
   if (!before) throw AppError.notFound("Payout not found.");
 
+  // Phase F: a paid payout is terminal — never re-processed, whether by a
+  // duplicate admin click, a retry, or a race (req. "duplicate payout prevention").
+  if (before.status === "paid") throw AppError.conflict("This payout has already been paid and cannot be changed.");
+
+  // Phase F: a winner must be verification-approved before their payout can be
+  // marked paid — never gated on "failed", which just records an attempt.
+  if (status === "paid") {
+    const { data: verification, error: verificationError } = await supabaseAdmin
+      .from("winner_verifications")
+      .select("status")
+      .eq("draw_match_id", before.draw_match_id)
+      .maybeSingle();
+    if (verificationError) throw AppError.internal("Failed to check winner verification status.");
+    if (verification?.status !== "approved") {
+      throw AppError.validation("This winner must be verified and approved before the payout can be marked paid.");
+    }
+  }
+
   // processed_at marks the terminal transition (paid/failed) only — never set on
   // creation, since "pending" isn't a processing outcome (PRD assumption, §9/§39).
-  const { error } = await supabaseAdmin
+  //
+  // The update is conditioned on status still not being "paid" (Phase H
+  // hardening): two concurrent "mark paid" requests could otherwise both pass
+  // the check above before either writes. `.neq("status","paid")` makes this
+  // an atomic check-and-set — if another request already marked it paid,
+  // zero rows match and `updated` is null, treated as a conflict rather than
+  // silently reprocessing an already-paid payout.
+  const { data: updated, error } = await supabaseAdmin
     .from("draw_payouts")
     .update({ status, processed_at: new Date().toISOString(), ...(method ? { method } : {}) })
-    .eq("id", payoutId);
+    .eq("id", payoutId)
+    .neq("status", "paid")
+    .select("id")
+    .maybeSingle();
   if (error) throw AppError.internal("Failed to update the payout.");
+  if (!updated) throw AppError.conflict("This payout has already been paid and cannot be changed.");
 
   await recordAudit({
     actorId: adminId,
     actorRole: "admin",
-    action: "draw.payout_recorded",
+    action: status === "paid" ? "draw.payout_recorded" : "draw.payout_failed",
     entityType: "draw_payout",
     entityId: payoutId,
     previousState: { status: before.status },
@@ -383,12 +428,24 @@ export async function getMyDrawResults(userId: string): Promise<DrawMyResultDTO[
   const { data: payoutRows, error: payoutError } = await supabaseAdmin.from("draw_payouts").select("draw_match_id, status").eq("user_id", userId);
   if (payoutError) throw AppError.internal("Failed to load your payout status.");
 
+  // Phase F: verification only ever applies to a winning match (non-null tier),
+  // so this is scoped to this user's rows only — never another subscriber's.
+  const { data: verificationRows, error: verificationError } = await supabaseAdmin
+    .from("winner_verifications")
+    .select("draw_match_id, status, rejection_reason")
+    .eq("user_id", userId);
+  if (verificationError) throw AppError.internal("Failed to load your verification status.");
+
   const matchByDraw = new Map((matchRows ?? []).map((m) => [m.draw_id, m]));
   const payoutByMatchId = new Map((payoutRows ?? []).map((p) => [p.draw_match_id, p.status as DrawPayoutStatus]));
+  const verificationByMatchId = new Map(
+    (verificationRows ?? []).map((v) => [v.draw_match_id, { status: v.status as WinnerVerificationStatus, reason: v.rejection_reason as string | null }]),
+  );
 
   return rows
     .map((r) => {
       const match = matchByDraw.get(r.draw_id);
+      const verification = match ? verificationByMatchId.get(match.id) : undefined;
       return {
         drawId: r.draw_id,
         periodStart: r.draws.period_start,
@@ -399,6 +456,9 @@ export async function getMyDrawResults(userId: string): Promise<DrawMyResultDTO[
         tier: (match?.tier ?? null) as MatchTier | null,
         prizeAmountCents: match?.prize_amount_cents ?? 0,
         payoutStatus: match ? (payoutByMatchId.get(match.id) ?? null) : null,
+        drawMatchId: match?.tier != null ? match.id : null,
+        verificationStatus: verification?.status ?? null,
+        rejectionReason: verification?.reason ?? null,
       };
     })
     .sort((a, b) => (a.periodStart < b.periodStart ? 1 : -1));

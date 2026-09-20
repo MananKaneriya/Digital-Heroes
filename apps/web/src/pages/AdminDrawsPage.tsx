@@ -81,6 +81,12 @@ export function AdminDrawsPage() {
           <Link to="/admin/charities" className="btn btn-ghost">
             Charities
           </Link>
+          <Link to="/admin/winners" className="btn btn-ghost">
+            Winners
+          </Link>
+          <Link to="/admin/reports" className="btn btn-ghost">
+            Reports
+          </Link>
         </div>
       </div>
 

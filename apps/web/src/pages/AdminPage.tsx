@@ -47,6 +47,12 @@ export function AdminPage() {
           <Link to="/admin/draws" className="btn btn-ghost">
             Draws
           </Link>
+          <Link to="/admin/winners" className="btn btn-ghost">
+            Winners
+          </Link>
+          <Link to="/admin/reports" className="btn btn-ghost">
+            Reports
+          </Link>
         </div>
       </div>
 

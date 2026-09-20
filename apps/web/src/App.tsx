@@ -10,6 +10,8 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { AdminPage } from "./pages/AdminPage";
 import { AdminCharitiesPage } from "./pages/AdminCharitiesPage";
 import { AdminDrawsPage } from "./pages/AdminDrawsPage";
+import { AdminWinnersPage } from "./pages/AdminWinnersPage";
+import { AdminReportsPage } from "./pages/AdminReportsPage";
 import { CharitiesPage } from "./pages/CharitiesPage";
 import { CharityProfilePage } from "./pages/CharityProfilePage";
 import { DrawsPage } from "./pages/DrawsPage";
@@ -60,6 +62,22 @@ export default function App() {
             element={
               <ProtectedRoute role="admin">
                 <AdminDrawsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/winners"
+            element={
+              <ProtectedRoute role="admin">
+                <AdminWinnersPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/reports"
+            element={
+              <ProtectedRoute role="admin">
+                <AdminReportsPage />
               </ProtectedRoute>
             }
           />

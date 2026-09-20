@@ -9,6 +9,7 @@
  * policy beyond what's written.
  */
 import { MAX_RETAINED_SCORES, STABLEFORD_SCORE_MAX, STABLEFORD_SCORE_MIN } from "./golfScore.js";
+import type { WinnerVerificationStatus } from "./winner.js";
 
 /**
  * Assumption: a participant's 5 retained Stableford scores (see golfScore.ts)
@@ -66,6 +67,11 @@ export interface DrawMyResultDTO {
   tier: MatchTier | null;
   prizeAmountCents: number;
   payoutStatus: DrawPayoutStatus | null;
+  /** Phase F: null for non-winning results. The id the /api/winners/:id endpoints expect. */
+  drawMatchId: string | null;
+  /** Phase F: null for non-winning results — verification only ever applies to a prize-winning match. */
+  verificationStatus: WinnerVerificationStatus | null;
+  rejectionReason: string | null;
 }
 
 export interface DrawAdminMatchDTO {
