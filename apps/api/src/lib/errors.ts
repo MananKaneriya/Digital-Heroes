@@ -38,6 +38,11 @@ export class AppError extends Error {
   static subscriptionRequired(message = "An active subscription is required for this action.") {
     return new AppError(ErrorCodes.SUBSCRIPTION_REQUIRED, message, 402);
   }
+  static emailConfirmationRequired(
+    message = "Account created. Please check your email to confirm your address before logging in.",
+  ) {
+    return new AppError(ErrorCodes.EMAIL_CONFIRMATION_REQUIRED, message, 403);
+  }
   static payment(message: string, details?: unknown) {
     return new AppError(ErrorCodes.PAYMENT_ERROR, message, 402, details);
   }

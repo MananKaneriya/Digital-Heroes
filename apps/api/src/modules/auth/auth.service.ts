@@ -51,10 +51,14 @@ export async function signUp(input: SignUpInput, requestId: string): Promise<Aut
     if (isClientAuthError(error)) throw AppError.validation(error.message);
     throw authServiceUnavailable(error);
   }
-  if (!data.user || !data.session) {
+  if (!data.user) {
     throw AppError.internal("Signup did not return a valid session.");
   }
 
+  // The account exists in Supabase Auth from this point on (the handle_new_user
+  // trigger has already created the profiles row), regardless of whether a
+  // session was issued below — so the signup is audited here, not after the
+  // session check.
   await recordAudit({
     actorId: data.user.id,
     actorRole: "subscriber",
@@ -64,6 +68,14 @@ export async function signUp(input: SignUpInput, requestId: string): Promise<Aut
     newState: { email: input.email },
     requestId,
   });
+
+  if (!data.session) {
+    // Documented Supabase behavior when the project's "Confirm email" setting is
+    // enabled: signUp() creates the user but withholds a session until they click
+    // the confirmation link in their email. This is a normal, successful outcome
+    // — not an internal error — so it must not be reported as one.
+    throw AppError.emailConfirmationRequired();
+  }
 
   return {
     accessToken: data.session.access_token,
